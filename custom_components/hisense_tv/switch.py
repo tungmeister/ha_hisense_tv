@@ -176,8 +176,8 @@ class HisenseGameModeSwitch(SwitchEntity, HisenseTvBase):
         """Turn the entity on."""
         await mqtt.async_publish(
             hass=self._hass,
-            topic=self._out_topic("/remoteapp/mobile/%s/platform_service/data/picturesetting"),
-            payload='{"action":"resp_set_value","menu_id":122,"menu_value_type":"int", "menu_value":0}',
+            topic=self._out_topic("/remoteapp/tv/platform_service/%s/actions/picturesetting"),
+            payload='{"action":"set_value","menu_id":122,"menu_value_type":"int", "menu_value":0}',
             retain=False,
         )
 
@@ -185,8 +185,8 @@ class HisenseGameModeSwitch(SwitchEntity, HisenseTvBase):
         """Turn the entity off."""
         await mqtt.async_publish(
             hass=self._hass,
-            topic=self._out_topic("/remoteapp/mobile/%s/platform_service/data/picturesetting"),
-            payload='{"action":"resp_set_value","menu_id":122,"menu_value_type":"int", "menu_value":0}',
+            topic=self._out_topic("/remoteapp/tv/platform_service/%s/actions/picturesetting"),
+            payload='{"action":"set_value","menu_id":122,"menu_value_type":"int", "menu_value":0}',
             retain=False,
         )
 
