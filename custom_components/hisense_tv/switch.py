@@ -3,6 +3,9 @@ import logging
 
 import wakeonlan
 
+import json
+from json.decoder import JSONDecodeError
+
 from homeassistant.components import mqtt
 from homeassistant.components.switch import DEVICE_CLASS_SWITCH, SwitchEntity
 from homeassistant.const import CONF_IP_ADDRESS, CONF_MAC, CONF_NAME
@@ -37,12 +40,14 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     )
     async_add_entities([entity])
     
-        gamemode = HisenseGameModeSwitch(
+    gamemode = HisenseGameModeSwitch(
         hass=hass,
-        name=name,
+        name=name + " Game Mode",
         mqtt_in=mqtt_in,
         mqtt_out=mqtt_out,
-        uid=uid,
+        mac=mac,
+        uid=uid + "1",
+        ip_address=ip_address,
     )
     async_add_entities([gamemode])
 
@@ -161,16 +166,51 @@ class HisenseTvSwitch(SwitchEntity, HisenseTvBase):
 class HisenseGameModeSwitch(SwitchEntity, HisenseTvBase):
     """Hisense GameMode switch entity."""
 
-    def __init__(self, hass, name, mqtt_in, mqtt_out, uid):
+    def __init__(self, hass, name, mqtt_in, mqtt_out, mac, uid, ip_address):
         HisenseTvBase.__init__(
             self=self,
             hass=hass,
-            name="Projector Game Mode",
+            name=name,
             mqtt_in=mqtt_in,
             mqtt_out=mqtt_out,
+            mac=mac,
             uid=uid,
+            ip_address=ip_address,
         )
+        self._attr_unique_id = f"{self._unique_id}_game_mode"
+
+        # The name of the entity
+        self._attr_name = f"{self._name} Game Mode"
         self._is_on = False
+        self._is_available = False
+        
+    async def async_will_remove_from_hass(self):
+        for unsubscribe in list(self._subscriptions.values()):
+            unsubscribe()
+
+    async def async_added_to_hass(self):
+        self._subscriptions["tvsleep"] = await mqtt.async_subscribe(
+            self._hass,
+            self._in_topic(
+                "/remoteapp/mobile/broadcast/platform_service/actions/tvsleep"
+            ),
+            self._message_received_turnoff,
+        )
+
+        self._subscriptions["state"] = await mqtt.async_subscribe(
+            self._hass,
+            self._in_topic("/remoteapp/mobile/broadcast/ui_service/state"),
+            self._message_received_turnon,
+        )
+        
+        self._subscriptions["picturesettings_value"] = await mqtt.async_subscribe(
+            self._hass,
+            self._in_topic(
+                "/remoteapp/mobile/broadcast/platform_service/data/picturesetting"
+            ),
+            self._message_received_value,
+        )
+        
 
     async def async_turn_on(self, **kwargs):
         """Turn the entity on."""
@@ -189,6 +229,57 @@ class HisenseGameModeSwitch(SwitchEntity, HisenseTvBase):
             payload='{"action":"set_value","menu_id":122,"menu_value_type":"int", "menu_value":0}',
             retain=False,
         )
+    
+    async def _message_received_turnon(self, msg):
+        _LOGGER.debug("message_received_turnon")
+        if msg.retain:
+            _LOGGER.debug("message_received_turnon - skip retained message")
+            return
+
+        self._is_available = True
+        self._force_trigger = True
+        self.async_write_ha_state()
+        await mqtt.async_publish(
+            hass=self._hass,
+            topic=self._out_topic(
+                "/remoteapp/tv/platform_service/%s/actions/picturesetting"
+            ),
+            payload='{"action": "get_menu_info"}',
+            retain=False,
+        )
+
+
+    async def _message_received_value(self, msg):
+        self._is_available = True
+        self._force_trigger = True
+        try:
+            payload = json.loads(msg.payload)
+        except JSONDecodeError:
+            payload = {}
+        _LOGGER.debug("_message_received_value R(%s):\n%s", msg.retain, payload)
+        if "notify_value_changed" == payload.get("action"):
+            if payload.get("menu_id") == 122:
+                if payload.get("menu_value") == 0:
+                    self._is_on = False
+                elif payload.get("menu_value") == 1:
+                    self._is_on = True
+        elif "resp_get_menu_info" == payload.get("action"):
+            results = payload.get("menu_info", [])   
+            for s in results:
+                if s.get("menu_id") == 122:
+                    if s.get("menu_value") == 0:
+                        self._is_on = False
+                    elif s.get("menu_value") == 1:
+                        self._is_on = True
+        self.async_write_ha_state()
+        
+
+    async def _message_received_turnoff(self, msg):
+        _LOGGER.debug("message_received_turnoff")
+        self._is_available = False
+        self._force_trigger = True
+        self.async_write_ha_state()
+        
 
     @property
     def is_on(self):
@@ -219,41 +310,13 @@ class HisenseGameModeSwitch(SwitchEntity, HisenseTvBase):
     def device_class(self):
         _LOGGER.debug("device_class")
         return DEVICE_CLASS_SWITCH
+        
+    @property
+    def available(self):
+        """Return True if entity is available."""
+        return self._is_available
 
     @property
     def should_poll(self):
         """No polling needed."""
         return False
-
-    async def async_will_remove_from_hass(self):
-        for unsubscribe in list(self._subscriptions.values()):
-            unsubscribe()
-
-    async def async_added_to_hass(self):
-        self._subscriptions["tvsleep"] = await mqtt.async_subscribe(
-            self._hass,
-            self._in_topic(
-                "/remoteapp/mobile/broadcast/platform_service/actions/tvsleep"
-            ),
-            self._message_received_turnoff,
-        )
-
-        self._subscriptions["state"] = await mqtt.async_subscribe(
-            self._hass,
-            self._in_topic("/remoteapp/mobile/broadcast/ui_service/state"),
-            self._message_received_state,
-        )
-
-    async def _message_received_turnoff(self, msg):
-        _LOGGER.debug("message_received_turnoff")
-        self._is_on = False
-        self.async_write_ha_state()
-
-    async def _message_received_state(self, msg):
-        if msg.retain:
-            _LOGGER.debug("SWITCH message_received_state - skip retained message")
-            return
-
-        _LOGGER.debug("SWITCH message_received_state - turn on")
-        self._is_on = True
-        self.async_write_ha_state()
